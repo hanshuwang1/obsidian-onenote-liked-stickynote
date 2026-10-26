@@ -1,9 +1,9 @@
 {
-    "id": "obsidian-onenote-liked-stickynote",
-    "name": "OneNote-like Sticky Notes",
-    "version": "1.0.1",
-    "minAppVersion": "1.7.2",
-    "description": "Display Markdown sections as OneNote-style sticky note cards.",
-    "author": "hanshuwang",
-    "isDesktopOnly": true
+	"id": "obsidian-onenote-liked-stickynote",
+	"name": "OneNote-like Sticky Notes",
+	"version": "1.0.1",
+	"minAppVersion": "1.7.2",
+	"description": "Display Markdown sections as OneNote-style sticky note cards.",
+	"author": "hanshuwang",
+	"isDesktopOnly": true
 }
