@@ -358,7 +358,12 @@
 	color: var(--text-on-accent);
 }
 
-.onenote-sticky-note-editor-toolbar > button:nth-last-child(2) {
+/* 右侧动作区（分隔线 + 取消/保存）：右对齐由容器负责，不再依赖按钮在
+   DOM 中的序号——那样每加一个按钮都会静默错位。 */
+.onenote-sticky-note-editor-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
 	margin-left: auto;
 }
 

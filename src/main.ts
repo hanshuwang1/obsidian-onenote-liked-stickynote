@@ -232,6 +232,9 @@ export default class MyPlugin extends Plugin {
 			DEFAULT_SETTINGS,
 			(await this.loadData()) as Partial<MyPluginSettings>,
 		);
+		// 复制一份，避免运行时写入污染 DEFAULT_SETTINGS 里的空对象
+		// （否则插件重载后旧记录会"继承"到新设置里）。
+		this.settings.noteModified = { ...(this.settings.noteModified ?? {}) };
 	}
 
 	async saveSettings(): Promise<void> {

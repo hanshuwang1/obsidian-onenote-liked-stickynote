@@ -6,6 +6,7 @@ import {
 	TFile,
 	WorkspaceLeaf,
 } from 'obsidian';
+import type { TAbstractFile } from 'obsidian';
 import type MyPlugin from '../main';
 import {
 	htmlToMarkdown,
@@ -13,7 +14,11 @@ import {
 	normalizeEditorBlocks,
 	normalizeEditorInlineTags,
 } from '../services/editor-markdown';
-import { parseStickyNotes } from '../services/note-parser';
+import { parseStickyNotes, parseTitleTimestamp } from '../services/note-parser';
+import {
+	locateNoteSection,
+	splitNoteSections,
+} from '../services/note-sections';
 import {
 	appendStickyNote,
 	updateStickyNoteInContent,
@@ -128,6 +133,20 @@ export class StickyNotesView extends ItemView {
 	private notesScrollEl: HTMLElement | null = null;
 	private refreshVersion = 0;
 	private editingCardEl: HTMLElement | null = null;
+	/**
+	 * 当前编辑器的工具栏状态刷新入口。selectionchange 在视图级只注册一次，
+	 * 这里只切换"当前转发给谁"——否则每打开一张卡就多挂一个永久监听器，
+	 * 并且一直拖住已脱离文档的 bodyInput 引用。
+	 */
+	private activeEditor: { updateToolbar: () => void } | null = null;
+	/** 编辑器里存在未保存的输入。 */
+	private editDirty = false;
+	/** 外部改动提醒只弹一次，避免输入过程中反复打扰。 */
+	private externalChangeNotified = false;
+	/** 本插件正在写文件：此时收到的 modify 是自己触发的，不算外部改动。 */
+	private savingNote = false;
+	/** 上一次渲染时集合文件的 mtime，用于窗口重新获得焦点时的新鲜度检查。 */
+	private renderedMtime = 0;
 	private snapButtonEl: HTMLButtonElement | null = null;
 	private snapSavedPosition: { left: number; top: number } | null = null;
 	private headerDragCleanup: (() => void) | null = null;
@@ -175,12 +194,22 @@ export class StickyNotesView extends ItemView {
 		this.containerEl.addClass('onenote-sticky-notes-container');
 		this.containerEl.ownerDocument.body.addClass('onenote-sticky-notes-popout');
 		this.registerEvent(
-			this.app.vault.on('modify', (file) => {
-				if (file.path === this.plugin.settings.collectionFile) {
-					void this.refresh();
-				}
-			}),
+			this.app.vault.on('modify', (file) => this.onCollectionFileModified(file)),
 		);
+		// 选区变化监听器在视图级只注册一次，按需转发给当前编辑器。
+		this.registerDomEvent(
+			this.containerEl.ownerDocument,
+			'selectionchange',
+			() => this.activeEditor?.updateToolbar(),
+		);
+		// mtime 变化不一定会伴随 modify 事件（同步工具、外部程序 touch 文件），
+		// 窗口重新获得焦点时补一次新鲜度检查。
+		const win = this.containerEl.ownerDocument.defaultView;
+		if (win) {
+			this.registerDomEvent(win, 'focus', () => {
+				void this.refreshIfStale();
+			});
+		}
 		this.setupWindowResizeTracking();
 		await this.refresh();
 	}
@@ -208,6 +237,7 @@ export class StickyNotesView extends ItemView {
 		if (!filePath) {
 			this.contentEl.empty();
 			this.contentEl.addClass('onenote-sticky-notes-view');
+			this.resetEditorState();
 			this.renderMessage('请先在插件设置中选择便笺集合文件。');
 			return;
 		}
@@ -216,6 +246,7 @@ export class StickyNotesView extends ItemView {
 		if (!(abstractFile instanceof TFile)) {
 			this.contentEl.empty();
 			this.contentEl.addClass('onenote-sticky-notes-view');
+			this.resetEditorState();
 			this.renderMessage(`找不到便笺文件：${filePath}`);
 			return;
 		}
@@ -230,20 +261,119 @@ export class StickyNotesView extends ItemView {
 
 		this.contentEl.empty();
 		this.contentEl.addClass('onenote-sticky-notes-view');
-		this.editingCardEl = null;
+		this.resetEditorState();
 		this.notes = notes;
 		this.collectionFile = abstractFile;
-		this.editingCardEl = null;
+		this.renderedMtime = abstractFile.stat.mtime;
 		this.notesScrollEl = null;
+		this.pruneNoteTimestamps(notes);
 		this.renderHeader(abstractFile.path, notes.length, abstractFile);
-		this.renderNotes(notes, abstractFile);
+		this.renderNotes(notes);
 	}
 
+	/**
+	 * 外部改动到达时的策略，取决于编辑器里有没有未保存的输入：
+	 *
+	 * - 有（dirty）：不刷新。刷新会把卡片重建回静态视图，直接吞掉用户刚敲的
+	 *   内容；只提醒一次，等保存或取消编辑时 refresh() 重读文件自然拿到最新。
+	 * - 没有：正常刷新（编辑器会收起，但没有内容会丢）。
+	 *
+	 * 自己写文件触发的 modify 由 savingNote 标记排除。
+	 */
+	private onCollectionFileModified(file: TAbstractFile): void {
+		if (file.path !== this.plugin.settings.collectionFile) {
+			return;
+		}
+		if (this.savingNote) {
+			return;
+		}
+		if (this.editingCardEl && this.editDirty) {
+			if (!this.externalChangeNotified) {
+				this.externalChangeNotified = true;
+				new Notice(
+					'便笺文件已在别处更新。为避免丢弃你的输入，这里先不刷新；保存或取消编辑后显示最新内容。',
+				);
+			}
+			return;
+		}
+		void this.refresh();
+	}
+
+	/** 窗口重新获得焦点时，若集合文件已变化（可能没有 modify 事件）就刷新。 */
+	private async refreshIfStale(): Promise<void> {
+		if (this.editingCardEl || this.savingNote) {
+			return;
+		}
+		const file = this.collectionFile;
+		if (!file || !(file instanceof TFile)) {
+			return;
+		}
+		if (file.stat.mtime !== this.renderedMtime) {
+			await this.refresh();
+		}
+	}
+
+	/** 退出编辑态。selectionchange 监听器只注册了一次，这里只清掉转发目标。 */
+	private resetEditorState(): void {
+		this.editingCardEl = null;
+		this.activeEditor = null;
+		this.editDirty = false;
+		this.externalChangeNotified = false;
+	}
+
+	/**
+	 * 丢弃已经不存在于文件里的便笺时间记录：章节内容变了，旧 id 就再也对不上，
+	 * 留着只会让 data.json 无限增长。
+	 */
+	private pruneNoteTimestamps(notes: StickyNote[]): void {
+		const timestamps = this.plugin.settings.noteModified;
+		const liveIds = new Set(notes.map((note) => note.id));
+		let changed = false;
+		for (const id of Object.keys(timestamps)) {
+			if (!liveIds.has(id)) {
+				delete timestamps[id];
+				changed = true;
+			}
+		}
+		if (changed) {
+			void this.plugin.saveSettings();
+		}
+	}
+
+	/**
+	 * 便笺自己的时间：优先用插件记录的本条保存时间；标题本身就是时间戳时
+	 * （"新建便笺"写入的 `YYYY-MM-DD HH:mm`）退而用标题；都没有就返回 null
+	 * 不显示日期——整文件 mtime 会让所有卡片显示同一个日期，比不显示更误导。
+	 */
+	private resolveNoteTimestamp(note: StickyNote | null): number | null {
+		if (!note) {
+			return null;
+		}
+		const recorded = this.plugin.settings.noteModified[note.id];
+		if (typeof recorded === 'number' && Number.isFinite(recorded)) {
+			return recorded;
+		}
+		return parseTitleTimestamp(note.title);
+	}
+
+	/** 今天的便笺显示时刻，更早的显示日期。 */
 	private formatModifiedTime(timestamp: number): string {
+		const date = new Date(timestamp);
+		const now = new Date();
+		const isToday =
+			date.getFullYear() === now.getFullYear() &&
+			date.getMonth() === now.getMonth() &&
+			date.getDate() === now.getDate();
+		if (isToday) {
+			return new Intl.DateTimeFormat('zh-CN', {
+				hour: '2-digit',
+				minute: '2-digit',
+			}).format(date);
+		}
 		return new Intl.DateTimeFormat('zh-CN', {
 			month: 'numeric',
 			day: 'numeric',
-		}).format(timestamp);
+		}).format(date);
 	}
 
 	private formatShortPath(filePath: string): string {
@@ -415,14 +545,14 @@ export class StickyNotesView extends ItemView {
 		this.contentEl
 			.querySelector('.onenote-sticky-notes-scroll, .onenote-sticky-notes-message')
 			?.remove();
-		this.editingCardEl = null;
+		this.resetEditorState();
 		this.notesScrollEl = null;
 		if (this.collectionFile) {
-			this.renderNotes(this.notes, this.collectionFile);
+			this.renderNotes(this.notes);
 		}
 	}
 
-	private renderNotes(notes: StickyNote[], file: TFile): void {
+	private renderNotes(notes: StickyNote[]): void {
 		const query = this.searchQuery.trim().toLocaleLowerCase();
 		const filteredNotes = query
 			? notes.filter((note) =>
@@ -446,34 +576,36 @@ export class StickyNotesView extends ItemView {
 			(left, right) => right.index - left.index,
 		);
 		for (const note of newestFirst) {
-			void this.renderCard(listEl, note, file);
+			void this.renderCard(listEl, note);
 		}
 	}
 
 	private async renderCard(
 		containerEl: HTMLElement,
 		note: StickyNote,
-		file: TFile,
 	): Promise<void> {
 		const cardEl = containerEl.createDiv({ cls: 'onenote-sticky-note-card' });
-		await this.renderStaticCard(cardEl, note, file);
+		await this.renderStaticCard(cardEl, note);
 	}
 
 	private async renderStaticCard(
 		cardEl: HTMLElement,
 		note: StickyNote,
-		file: TFile,
 	): Promise<void> {
 		cardEl.empty();
 		cardEl.removeClass('onenote-sticky-note-card-editing');
+		cardEl.dataset.noteId = note.id;
 		cardEl.createDiv({ cls: 'onenote-sticky-note-card-bar' });
 
 		const metaEl = cardEl.createDiv({ cls: 'onenote-sticky-note-card-meta' });
 		metaEl.createEl('h3', { text: note.title });
-		metaEl.createEl('time', {
-			text: this.formatModifiedTime(file.stat.mtime),
-			cls: 'onenote-sticky-note-card-date',
-		});
+		const timestamp = this.resolveNoteTimestamp(note);
+		if (timestamp !== null) {
+			metaEl.createEl('time', {
+				text: this.formatModifiedTime(timestamp),
+				cls: 'onenote-sticky-note-card-date',
+			});
+		}
 
 		const bodyEl = cardEl.createDiv({ cls: 'onenote-sticky-note-card-body' });
 		// 确定性渲染：与编辑器/保存序列化同一管线，保证“显示 = 编辑 = 文件”。
@@ -490,26 +622,26 @@ export class StickyNotesView extends ItemView {
 			if (target.closest('button, input, textarea, [contenteditable="true"]')) {
 				return;
 			}
-			void this.renderEditor(cardEl, note, file);
+			void this.renderEditor(cardEl, note);
 		};
 	}
 
 	private async renderEditor(
 		cardEl: HTMLElement,
 		note: StickyNote,
-		file: TFile,
 	): Promise<void> {
 		if (this.editingCardEl && this.editingCardEl !== cardEl) {
 			const previousCard = this.editingCardEl;
 			const previousNote = previousCard.dataset.noteId
 				? this.notes.find((item) => item.id === previousCard.dataset.noteId)
 				: undefined;
-			if (previousNote && this.collectionFile) {
-				await this.renderStaticCard(previousCard, previousNote, this.collectionFile);
+			if (previousNote) {
+				await this.renderStaticCard(previousCard, previousNote);
 			}
 		}
 
 		this.editingCardEl = cardEl;
+		this.editDirty = false;
 		cardEl.dataset.noteId = note.id;
 		cardEl.empty();
 		cardEl.addClass('onenote-sticky-note-card-editing');
@@ -572,52 +704,68 @@ export class StickyNotesView extends ItemView {
 		bodyInput.addEventListener('input', updateToolbarState);
 		bodyInput.addEventListener('keyup', updateToolbarState);
 		bodyInput.addEventListener('mouseup', updateToolbarState);
-		bodyInput.addEventListener('focus', updateToolbarState);
-		this.registerDomEvent(bodyInput.ownerDocument, 'selectionchange', updateToolbarState);
+		// selectionchange 由视图级监听器统一转发（只注册一次），这里只登记
+		// 当前编辑器；关闭/刷新时由 resetEditorState 负责清空引用。
+		this.activeEditor = { updateToolbar: updateToolbarState };
+		const markDirty = () => {
+			this.editDirty = true;
+		};
+		titleInput.addEventListener('input', markDirty);
+		bodyInput.addEventListener('input', markDirty);
 		updateToolbarState();
-		toolbarEl.createDiv({
+
+		// 右侧动作区独立成容器：右对齐交给容器，不再依赖按钮在 DOM 中的序号
+		// （增删按钮不会让对齐静默错位）。
+		const actionsEl = toolbarEl.createDiv({
+			cls: 'onenote-sticky-note-editor-actions',
+		});
+		actionsEl.createDiv({
 			cls: 'onenote-sticky-note-editor-divider',
 			attr: { 'aria-hidden': 'true' },
 		});
-		const cancelButton = toolbarEl.createEl('button', {
+		const cancelButton = actionsEl.createEl('button', {
 			text: '×',
 			cls: 'onenote-sticky-note-action-button',
 			attr: { type: 'button', 'aria-label': '取消编辑' },
 		});
-		const saveButton = toolbarEl.createEl('button', {
+		const saveButton = actionsEl.createEl('button', {
 			text: '✓',
 			cls: 'mod-cta onenote-sticky-note-action-button',
 			attr: { type: 'button', 'aria-label': '保存便笺' },
 		});
 		const commitEdit = () => {
-				this.normalizeEditorBlocks(bodyInput);
-				void this.saveNote(
-					file,
-					note,
-					titleInput.value,
-					this.htmlToMarkdown(bodyInput),
-				);
+			const file = this.collectionFile;
+			if (!file) {
+				return;
+			}
+			this.normalizeEditorBlocks(bodyInput);
+			void this.saveNote(
+				file,
+				note,
+				titleInput.value,
+				this.htmlToMarkdown(bodyInput),
+			);
 		};
 		cancelButton.addEventListener('click', (event) => {
-				event.stopPropagation();
-				void this.refresh();
+			event.stopPropagation();
+			void this.refresh();
 		});
 		saveButton.addEventListener('click', (event) => {
-				event.stopPropagation();
-				commitEdit();
+			event.stopPropagation();
+			commitEdit();
 		});
 		// Ctrl/Cmd+S 与对勾按钮等价。捕获阶段拦截，避免冒泡到
 		// Obsidian 全局的"保存当前文件"命令。
 		cardEl.addEventListener(
-				'keydown',
-				(event) => {
-					if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-						event.preventDefault();
-						event.stopPropagation();
-						commitEdit();
-					}
-				},
-				true,
+			'keydown',
+			(event) => {
+				if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+					event.preventDefault();
+					event.stopPropagation();
+					commitEdit();
+				}
+			},
+			true,
 		);
 	}
 
@@ -714,6 +862,9 @@ export class StickyNotesView extends ItemView {
 		selection.addRange(lineRange);
 		input.ownerDocument.execCommand(command);
 		this.restoreCaret(input, caretOffset);
+		// execCommand 在 Chromium 里也会派发 input 事件，但格式变化未必触发，
+		// 这里显式标记"有未保存的改动"。
+		this.editDirty = true;
 		this.updateToolbarState(input, this.getFormatButtons(input));
 	}
 
@@ -855,14 +1006,65 @@ export class StickyNotesView extends ItemView {
 		body: string,
 	): Promise<void> {
 		try {
-			await this.app.vault.process(file, (content) =>
-				updateStickyNoteInContent(content, note.index, title, body),
-			);
+			// 写入前先确认目标章节仍然存在（内容级定位）。文件被外部改写/删除时
+			// 直接放弃，绝不退化成按序号覆盖。
+			const current = await this.app.vault.read(file);
+			if (!locateNoteSection(splitNoteSections(current), note)) {
+				new Notice(
+					'这条便笺已在文件里被改动或删除，保存已取消（你的输入仍留在卡片里）。',
+				);
+				return;
+			}
+
+			this.savingNote = true;
+			let written = false;
+			await this.app.vault.process(file, (content) => {
+				const next = updateStickyNoteInContent(content, note, title, body);
+				if (next === null) {
+					return content;
+				}
+				written = true;
+				return next;
+			});
+			if (!written) {
+				new Notice(
+					'这条便笺已在文件里被改动或删除，保存已取消（你的输入仍留在卡片里）。',
+				);
+				return;
+			}
+
 			await this.refresh();
+			// 刷新后按同一个位置取回写入后的章节，把它的 id 记为"本条刚保存过"。
+			// 只改位置不改节数，所以序号在这里是可靠的。
+			const savedNote = this.notes[note.index];
+			if (!savedNote) {
+				return;
+			}
+			this.plugin.settings.noteModified[savedNote.id] = Date.now();
+			await this.plugin.saveSettings();
+			this.refreshCardTimestamp(savedNote);
 		} catch (error) {
 			console.error(error);
 			new Notice('保存便笺失败。');
+		} finally {
+			this.savingNote = false;
 		}
+	}
+
+	/** 只更新这张卡片右上角的时间，避免为一行日期再重读一遍文件。 */
+	private refreshCardTimestamp(note: StickyNote): void {
+		const timestamp = this.resolveNoteTimestamp(note);
+		if (timestamp === null) {
+			return;
+		}
+		const card = Array.from(
+			this.contentEl.querySelectorAll<HTMLElement>('.onenote-sticky-note-card'),
+		).find((element) => element.dataset.noteId === note.id);
+		const timeEl = card?.querySelector('time');
+		if (!timeEl) {
+			return;
+		}
+		timeEl.setText(this.formatModifiedTime(timestamp));
 	}
 
 	private async createNote(file: TFile): Promise<void> {

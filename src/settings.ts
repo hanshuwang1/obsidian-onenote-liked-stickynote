@@ -8,6 +8,7 @@ export const DEFAULT_SETTINGS: MyPluginSettings = {
 	collectionFile: '',
 	popoutWidth: 0,
 	popoutHeight: 0,
+	noteModified: {},
 };
 
 export class StickyNotesSettingTab extends PluginSettingTab {
