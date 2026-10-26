@@ -1,8 +1,356 @@
-/*
+.onenote-sticky-notes-view {
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	padding: 0 12px 12px;
+	overflow: hidden;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.onenote-sticky-notes-header {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 6px 8px;
+	padding: 10px 0 12px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+}
 
-If your plugin does not need CSS, delete this file.
+.onenote-sticky-notes-header-title {
+	flex: 1 1 auto;
+	min-width: 0;
+}
 
-*/
+.onenote-sticky-notes-header h2 {
+	margin: 0;
+	font-size: var(--font-ui-medium);
+	font-weight: 700;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.onenote-sticky-notes-file-label {
+	display: block;
+	margin-top: 4px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.onenote-sticky-notes-scroll {
+	flex: 1 1 auto;
+	min-height: 0;
+	padding-top: 14px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+}
+
+.onenote-sticky-notes-actions {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 6px;
+}
+
+.onenote-sticky-notes-search {
+	order: 3;
+	flex: 1 1 100%;
+	display: none;
+	min-height: 30px;
+}
+
+.onenote-sticky-notes-search.is-visible {
+	display: block;
+}
+
+.onenote-sticky-notes-icon-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	cursor: pointer;
+}
+
+.onenote-sticky-notes-icon-button:hover {
+	border-color: var(--interactive-accent);
+	color: var(--interactive-accent);
+}
+
+.onenote-sticky-notes-new-button {
+	border: 0;
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.onenote-sticky-notes-new-button:hover {
+	background: var(--interactive-accent-hover);
+}
+
+.onenote-sticky-notes-snap-button {
+	background: var(--background-secondary);
+	font-size: var(--font-ui-medium);
+	font-weight: 700;
+}
+
+.onenote-sticky-notes-snap-button.is-active {
+	border-color: var(--interactive-accent);
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+/**
+ * Frameless popout drag: the plugin header is a native drag region
+ * (-webkit-app-region: drag) so the OS moves the window smoothly. Every
+ * interactive child (buttons, inputs) MUST opt out with no-drag, otherwise
+ * the drag region swallows their clicks. setupHeaderDrag's JS pointer drag
+ * remains as a fallback for environments where the CSS region is inert.
+ */
+.onenote-sticky-notes-popout .view-header {
+	-webkit-app-region: drag;
+}
+
+.onenote-sticky-notes-popout .onenote-sticky-notes-header {
+	-webkit-app-region: drag;
+}
+
+.onenote-sticky-notes-popout .onenote-sticky-notes-header button,
+.onenote-sticky-notes-popout .onenote-sticky-notes-header input,
+.onenote-sticky-notes-popout .view-header button,
+.onenote-sticky-notes-popout .view-header input,
+.onenote-sticky-notes-popout .view-actions {
+	-webkit-app-region: no-drag;
+}
+
+/* 吸附后锁定窗口：drag 区整体失效，JS 兜底同样拒绝拖动 */
+.onenote-sticky-notes-popout.is-snapped .view-header,
+.onenote-sticky-notes-popout.is-snapped .onenote-sticky-notes-header {
+	-webkit-app-region: no-drag;
+}
+
+.onenote-sticky-notes-popout .workspace-tab-header-container,
+.onenote-sticky-notes-popout .view-header-nav-buttons {
+	display: none;
+}
+
+.onenote-sticky-notes-popout .view-header {
+	min-height: 0;
+	border-bottom: 0;
+}
+
+.onenote-sticky-notes-popout .view-header {
+	min-height: var(--header-height, 36px);
+	opacity: 1 !important;
+	visibility: visible !important;
+}
+
+.onenote-sticky-notes-popout .view-header-title,
+.onenote-sticky-notes-popout .view-header-title-text,
+.onenote-sticky-notes-popout .view-header-title-container,
+.onenote-sticky-notes-popout .view-header-title-parent,
+.onenote-sticky-notes-popout .view-actions {
+	opacity: 1 !important;
+	visibility: visible !important;
+}
+
+.onenote-sticky-notes-popout .view-header .view-header-title,
+.onenote-sticky-notes-popout .view-header .view-header-title-text {
+	font-size: 1.1em;
+	font-weight: 700;
+}
+
+.onenote-sticky-notes-list {
+	display: grid;
+	gap: 14px;
+}
+
+.onenote-sticky-note-card {
+	position: relative;
+	overflow: hidden;
+	padding: 20px 16px 16px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	background: var(--background-secondary);
+	box-shadow: 0 4px 14px rgb(0 0 0 / 14%);
+	transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.onenote-sticky-note-card:hover {
+	border-color: var(--interactive-accent);
+	box-shadow: 0 6px 18px rgb(0 0 0 / 20%);
+	transform: translateY(-1px);
+}
+
+.onenote-sticky-note-card-editing {
+	cursor: default;
+	padding-top: 12px;
+}
+
+.onenote-sticky-note-card-editing:hover {
+	transform: none;
+}
+
+.onenote-sticky-note-card-bar {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	height: 4px;
+	background: var(--interactive-accent);
+}
+
+.onenote-sticky-note-card-meta {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 12px;
+}
+
+.onenote-sticky-note-card-meta h3 {
+	min-width: 0;
+	margin: 0;
+	font-size: var(--font-ui-medium);
+	font-weight: 700;
+	line-height: 1.35;
+	word-break: break-word;
+}
+
+.onenote-sticky-note-card-date {
+	flex: 0 0 auto;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+	white-space: nowrap;
+}
+
+.onenote-sticky-note-card-body {
+	margin: 0;
+	color: var(--text-muted);
+	font-family: inherit;
+	font-size: var(--font-ui-small);
+	line-height: 1.55;
+}
+
+.onenote-sticky-note-card-body > :first-child {
+	margin-top: 0;
+}
+
+.onenote-sticky-note-card-body > :last-child {
+	margin-bottom: 0;
+}
+
+.onenote-sticky-note-card-body p,
+.onenote-sticky-note-card-body ul,
+.onenote-sticky-note-card-body ol,
+.onenote-sticky-note-card-body blockquote {
+	word-break: break-word;
+}
+
+.onenote-sticky-note-editor-title,
+.onenote-sticky-note-editor-body {
+	box-sizing: border-box;
+	width: 100%;
+	border: 0;
+	background: transparent;
+}
+
+.onenote-sticky-note-editor-title {
+	margin: 0 0 8px;
+	padding: 0;
+	font-family: inherit;
+	font-size: var(--font-ui-medium);
+	font-weight: 700;
+}
+
+.onenote-sticky-note-editor-body {
+	min-height: 150px;
+	padding: 0;
+	outline: none;
+	resize: vertical;
+	font: inherit;
+	font-size: var(--font-ui-small);
+	line-height: 1.55;
+}
+
+.onenote-sticky-note-editor-body:empty::before {
+	content: attr(data-placeholder);
+	color: var(--text-faint);
+	pointer-events: none;
+}
+
+.onenote-sticky-note-editor-body {
+	color: var(--text-normal);
+}
+
+.onenote-sticky-note-editor-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 12px;
+}
+
+.onenote-sticky-note-editor-divider {
+	align-self: stretch;
+	width: 1px;
+	margin: 0 4px;
+	background: var(--background-modifier-border);
+}
+
+.onenote-sticky-note-action-button {
+	min-width: 28px;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	font-size: var(--font-ui-medium);
+	line-height: 1;
+}
+
+.onenote-sticky-note-format-button {
+	min-width: 28px;
+	height: 28px;
+	padding: 2px 6px;
+	border: 0;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--text-muted);
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.onenote-sticky-note-format-button:hover {
+	background: var(--background-modifier-hover);
+	color: var(--interactive-accent);
+}
+
+.onenote-sticky-note-format-button.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.onenote-sticky-note-editor-toolbar > button:nth-last-child(2) {
+	margin-left: auto;
+}
+
+.onenote-sticky-notes-message {
+	padding: 24px 8px;
+	color: var(--text-muted);
+	text-align: center;
+}
+
+@media (max-width: 280px) {
+	.onenote-sticky-notes-file-label {
+		display: none;
+	}
+}

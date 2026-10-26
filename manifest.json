@@ -1,11 +1,9 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
-	"version": "1.0.0",
-	"minAppVersion": "1.0.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
-	"isDesktopOnly": false
+    "id": "obsidian-onenote-liked-stickynote",
+    "name": "OneNote-like Sticky Notes",
+    "version": "1.0.0",
+    "minAppVersion": "1.0.0",
+    "description": "Display Markdown sections as OneNote-style sticky note cards.",
+    "author": "han-y7000p",
+    "isDesktopOnly": true
 }
