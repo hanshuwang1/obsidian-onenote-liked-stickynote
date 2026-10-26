@@ -1,10 +1,10 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
-import type MyPlugin from './main';
+import type StickyNotesPlugin from './main';
 import type { StickyNotesSettings } from './types/settings';
 
-export type MyPluginSettings = StickyNotesSettings;
+export type StickyNotesPluginSettings = StickyNotesSettings;
 
-export const DEFAULT_SETTINGS: MyPluginSettings = {
+export const DEFAULT_SETTINGS: StickyNotesPluginSettings = {
 	collectionFile: '',
 	popoutWidth: 0,
 	popoutHeight: 0,
@@ -12,9 +12,9 @@ export const DEFAULT_SETTINGS: MyPluginSettings = {
 };
 
 export class StickyNotesSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+	plugin: StickyNotesPlugin;
 
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: StickyNotesPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}

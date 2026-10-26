@@ -1,7 +1,7 @@
 import { Plugin, TFile, WorkspaceLeaf, WorkspaceTabs, WorkspaceWindow } from 'obsidian';
 import {
 	DEFAULT_SETTINGS,
-	MyPluginSettings,
+	StickyNotesPluginSettings,
 	StickyNotesSettingTab,
 } from './settings';
 import {
@@ -11,8 +11,8 @@ import {
 
 const FOREIGN_LEAF_EVICT_DELAY_MS = 250;
 
-export default class MyPlugin extends Plugin {
-	settings!: MyPluginSettings;
+export default class StickyNotesPlugin extends Plugin {
+	settings!: StickyNotesPluginSettings;
 	private evictTimer: number | null = null;
 
 	async onload() {
@@ -230,7 +230,7 @@ export default class MyPlugin extends Plugin {
 		this.settings = Object.assign(
 			{},
 			DEFAULT_SETTINGS,
-			(await this.loadData()) as Partial<MyPluginSettings>,
+			(await this.loadData()) as Partial<StickyNotesPluginSettings>,
 		);
 		// 复制一份，避免运行时写入污染 DEFAULT_SETTINGS 里的空对象
 		// （否则插件重载后旧记录会"继承"到新设置里）。

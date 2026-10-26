@@ -8,7 +8,7 @@ import {
 	WorkspaceLeaf,
 } from 'obsidian';
 import type { TAbstractFile } from 'obsidian';
-import type MyPlugin from '../main';
+import type StickyNotesPlugin from '../main';
 import {
 	htmlToMarkdown,
 	markdownToEditorHtml,
@@ -129,7 +129,7 @@ function getElectronWindow(win: Window): ElectronBrowserWindowLike | null {
 }
 
 export class StickyNotesView extends ItemView {
-	private readonly plugin: MyPlugin;
+	private readonly plugin: StickyNotesPlugin;
 	private searchQuery = '';
 	private notes: StickyNote[] = [];
 	private collectionFile: TFile | null = null;
@@ -176,7 +176,7 @@ export class StickyNotesView extends ItemView {
 	private sizePersistTimer: number | null = null;
 	private sizeTimerWin: Window | null = null;
 
-	constructor(leaf: WorkspaceLeaf, plugin: MyPlugin) {
+	constructor(leaf: WorkspaceLeaf, plugin: StickyNotesPlugin) {
 		super(leaf);
 		this.plugin = plugin;
 	}

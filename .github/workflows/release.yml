@@ -2,86 +2,57 @@ name: Release Obsidian plugin
 
 on:
   push:
+    # 只有以数字开头的 tag 才触发发布（版本号形如 1.0.1）。
+    # 原来的 "*" 会让任意 tag 都尝试发布。
     tags:
-      - "*"
+      - "[0-9]*"
 
-env:
-  PLUGIN_NAME: obsidian-onenote-liked-stickynote # Change this to match the id of your plugin.
+# GitHub 自 2023 年起把新仓库的 GITHUB_TOKEN 默认设为只读，
+# 不再显式声明权限时创建 release 会 403：
+#   Resource not accessible by integration
+permissions:
+  contents: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v6
+
       - name: Use Node.js
-        uses: actions/setup-node@v1
+        uses: actions/setup-node@v6
         with:
-          node-version: "14.x"
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Build
-        id: build
+        run: npm run build
+
+      # Obsidian 要求 release 的 tag 与 manifest.json 的 version 完全一致
+      # （不带 v 前缀）。不一致时直接失败，避免发出装不上的版本。
+      - name: Verify tag matches manifest version
         run: |
-          npm install
-          npm run build
-          mkdir ${{ env.PLUGIN_NAME }}
-          cp main.js manifest.json styles.css ${{ env.PLUGIN_NAME }}
-          zip -r ${{ env.PLUGIN_NAME }}.zip ${{ env.PLUGIN_NAME }}
-          ls
-          echo "::set-output name=tag_name::$(git tag --sort version:refname | tail -n 1)"
+          tag="${GITHUB_REF#refs/tags/}"
+          version="$(node -p 'require("./manifest.json").version')"
+          echo "tag=$tag version=$version"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag '$tag' does not match manifest.json version '$version'"
+            exit 1
+          fi
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
+      # 用 gh cli 直接发版：checkout@v2 / setup-node@v1 / create-release@v1 /
+      # upload-release-asset@v1 都已废弃（后两个仓库已归档），
+      # 且 ::set-output 已被 GitHub 标记为即将禁用。
+      - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ github.ref }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: ${{ github.ref }}
-          draft: false
-          prerelease: false
-
-      - name: Upload zip file
-        id: upload-zip
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./${{ env.PLUGIN_NAME }}.zip
-          asset_name: ${{ env.PLUGIN_NAME }}-${{ steps.build.outputs.tag_name }}.zip
-          asset_content_type: application/zip
-
-      - name: Upload main.js
-        id: upload-main
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./main.js
-          asset_name: main.js
-          asset_content_type: text/javascript
-
-      - name: Upload manifest.json
-        id: upload-manifest
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./manifest.json
-          asset_name: manifest.json
-          asset_content_type: application/json
-
-      - name: Upload styles.css
-        id: upload-css
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./styles.css
-          asset_name: styles.css
-          asset_content_type: text/css
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            main.js manifest.json styles.css
