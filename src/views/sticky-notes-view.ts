@@ -326,9 +326,12 @@ export class StickyNotesView extends ItemView {
 			// 运行在主窗口内：原生标题栏已可拖动窗口，无需 JS 兜底
 			return;
 		}
+		// 跨 realm 安全的元素判定：弹窗内 `instanceof Element` 恒为 false，
+		// 会把按钮点击误判为非交互区域而开始拖动整个窗口。
 		const isInteractiveTarget = (target: EventTarget | null): boolean =>
-			target instanceof Element &&
-			!!target.closest(
+			!!target &&
+			(target as Node).nodeType === Node.ELEMENT_NODE &&
+			!!(target as Element).closest(
 				'button, input, .onenote-sticky-note-card, [contenteditable], .view-header',
 			);
 
@@ -533,6 +536,18 @@ export class StickyNotesView extends ItemView {
 		this.normalizeEditorInlineTags(bodyInput);
 		this.placeCaretAtEnd(bodyInput);
 		bodyInput.focus();
+		// 让回车直接产生 <p> 兄弟块。Chromium 的默认段落分隔符是 <div>，
+		// 回车会生成嵌套 div，全靠 normalizeEditorBlocks 事后修正；直接要 p
+		// 能让 DOM 从一开始就是规范形状（归一化仍是兜底，不是唯一防线）。
+		try {
+			bodyInput.ownerDocument.execCommand(
+				'defaultParagraphSeparator',
+				false,
+				'p',
+			);
+		} catch {
+			/* 不支持时保持浏览器默认，归一化负责修正 */
+		}
 		const toolbarEl = cardEl.createDiv({ cls: 'onenote-sticky-note-editor-toolbar' });
 		const formatButtons = new Map<string, HTMLButtonElement>();
 		formatButtons.set(
@@ -719,12 +734,23 @@ export class StickyNotesView extends ItemView {
 		return buttons;
 	}
 
+	/**
+	 * 选区锚点所在的元素。刻意不用 `instanceof HTMLElement`：弹窗是独立
+	 * realm，该判断在 popout 内恒为 false，会把元素锚点误当文本节点处理。
+	 */
+	private getAnchorElement(anchorNode: Node | null): HTMLElement | null {
+		if (!anchorNode) {
+			return null;
+		}
+		if (anchorNode.nodeType === Node.ELEMENT_NODE) {
+			return anchorNode as HTMLElement;
+		}
+		return anchorNode.parentElement;
+	}
+
 	private getCurrentLineElement(input: HTMLElement): HTMLElement | null {
 		const selection = input.ownerDocument.getSelection();
-		const anchorNode = selection?.anchorNode;
-		const anchorElement = anchorNode instanceof HTMLElement
-			? anchorNode
-			: anchorNode?.parentElement;
+		const anchorElement = this.getAnchorElement(selection?.anchorNode ?? null);
 		if (!anchorElement || !input.contains(anchorElement)) {
 			return null;
 		}
@@ -776,10 +802,7 @@ export class StickyNotesView extends ItemView {
 		buttons: Map<string, HTMLButtonElement>,
 	): void {
 		const selection = input.ownerDocument.getSelection();
-		const anchorNode = selection?.anchorNode;
-		const anchorElement = anchorNode instanceof HTMLElement
-			? anchorNode
-			: anchorNode?.parentElement;
+		const anchorElement = this.getAnchorElement(selection?.anchorNode ?? null);
 		const insideEditor = !!anchorElement && input.contains(anchorElement);
 
 		const activeFormats = new Set<string>();

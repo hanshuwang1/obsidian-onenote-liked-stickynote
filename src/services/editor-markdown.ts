@@ -16,6 +16,21 @@ const STYLED_INLINE_TAGS = new Set([
 	'B', 'STRONG', 'I', 'EM', 'DEL', 'S', 'STRIKE', 'U',
 ]);
 
+/**
+ * 跨窗口安全的“元素节点”判定。
+ *
+ * Obsidian 的 popout 是 window.open 出来的独立 window，也就是独立的 realm：
+ * 它的 HTMLElement 与主窗口的不是同一个构造函数，`node instanceof HTMLElement`
+ * 在弹窗里恒为 false。而弹窗正是本插件唯一的运行环境，这类判断一旦失效，
+ * 归一化与序列化会整体静默退化——嵌套块不展开、块边界被当成行内内容拼接、
+ * `<b>` 等格式标记被丢弃，表现为“回车换行全部丢失、正文并成一行”。
+ *
+ * `nodeType` 是数值常量（1 = ELEMENT_NODE），跨 realm 永远成立。
+ */
+function isElementNode(node: Node): node is HTMLElement {
+	return node.nodeType === Node.ELEMENT_NODE;
+}
+
 export function normalizeEditorBlocks(root: HTMLElement): void {
 	const document = root.ownerDocument;
 
@@ -23,7 +38,7 @@ export function normalizeEditorBlocks(root: HTMLElement): void {
 	// 保证根的每个直接子节点恰是一个块元素。
 	const flatten = (container: HTMLElement) => {
 		Array.from(container.childNodes).forEach((child) => {
-			if (!(child instanceof HTMLElement)) {
+			if (!isElementNode(child)) {
 				return;
 			}
 			flatten(child);
@@ -73,10 +88,7 @@ export function normalizeEditorBlocks(root: HTMLElement): void {
 	while (changed) {
 		changed = false;
 		root.querySelectorAll(':scope > * > *').forEach((maybeNested) => {
-			if (
-				!(maybeNested instanceof HTMLElement) ||
-				!BLOCK_TAGS.has(maybeNested.tagName)
-			) {
+			if (!isElementNode(maybeNested) || !BLOCK_TAGS.has(maybeNested.tagName)) {
 				return;
 			}
 			const parent = maybeNested.parentElement;
@@ -106,7 +118,7 @@ export function normalizeEditorBlocks(root: HTMLElement): void {
 		const chain: HTMLElement[] = [];
 		let escaped = false;
 		for (let cur = br.parentNode; cur && cur !== block; cur = cur.parentNode) {
-			if (!(cur instanceof HTMLElement) || BLOCK_TAGS.has(cur.tagName)) {
+			if (!isElementNode(cur) || BLOCK_TAGS.has(cur.tagName)) {
 				escaped = true;
 				break;
 			}
@@ -276,11 +288,20 @@ export function htmlToMarkdown(element: HTMLElement): string {
 		if (node.nodeType === Node.TEXT_NODE) {
 			return node.textContent ?? '';
 		}
-		if (!(node instanceof HTMLElement)) {
+		if (!isElementNode(node)) {
+			// 非元素节点（文本已在上方处理，其余如注释节点）直接拼接子内容。
 			return Array.from(node.childNodes).map(inlineConvert).join('');
 		}
 		if (node.tagName === 'BR') {
 			return '\n';
+		}
+		if (BLOCK_TAGS.has(node.tagName)) {
+			// 兜底：块级元素出现在行内位置（normalize 被跳过或 DOM 形状超出
+			// 预期）时，仍用段落边界隔开，绝不让两行静默拼成一行。
+			// 不递归到 blockConvert：它会回头用 inlineConvert 处理同一节点，
+			// 形成无限递归。
+			const inner = Array.from(node.childNodes).map(inlineConvert).join('');
+			return `\n\n${inner}\n\n`;
 		}
 		if (!STYLED_INLINE_TAGS.has(node.tagName)) {
 			// 未加标记的元素（<span>、<code> 等）直接拼接子内容。
@@ -308,7 +329,7 @@ export function htmlToMarkdown(element: HTMLElement): string {
 	};
 
 	const blockConvert = (node: Node): string => {
-		if (!(node instanceof HTMLElement) || !BLOCK_TAGS.has(node.tagName)) {
+		if (!isElementNode(node) || !BLOCK_TAGS.has(node.tagName)) {
 			return inlineConvert(node);
 		}
 
