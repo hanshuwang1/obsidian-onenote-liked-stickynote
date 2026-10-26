@@ -44,6 +44,31 @@ export function updateStickyNoteInContent(
 	return endsWithNewline ? `${joined}\n` : joined;
 }
 
+/**
+ * 删除一条便笺（同样按内容定位）。
+ *
+ * 返回 null 表示这条便笺已经不在文件里（被外部改写或删除），调用方应放弃
+ * 写入——按序号盲删会删掉别人的卡片。
+ */
+export function removeStickyNoteFromContent(
+	content: string,
+	locator: NoteLocator,
+): string | null {
+	const target = locateNoteSection(splitNoteSections(content), locator);
+	if (!target) {
+		return null;
+	}
+
+	const lines = content.split(/\r?\n/);
+	// 章节范围已包含紧随标题内容的空行，直接整段删掉即可，不会留下双空行。
+	lines.splice(target.startLine, target.endLine - target.startLine);
+	const joined = lines.join('\n').replace(/\n+$/, '');
+	if (joined === '') {
+		return '';
+	}
+	return /\r?\n$/.test(content) ? `${joined}\n` : joined;
+}
+
 export function appendStickyNote(
 	content: string,
 	title: string,

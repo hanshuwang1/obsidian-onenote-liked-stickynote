@@ -1,5 +1,6 @@
 import {
 	ItemView,
+	Menu,
 	Notice,
 	setIcon,
 	setTooltip,
@@ -21,9 +22,11 @@ import {
 } from '../services/note-sections';
 import {
 	appendStickyNote,
+	removeStickyNoteFromContent,
 	updateStickyNoteInContent,
 } from '../services/note-serializer';
 import type { StickyNote } from '../types/note';
+import { ConfirmModal } from '../ui/confirm-modal';
 
 export const VIEW_TYPE_STICKY_NOTES = 'onenote-sticky-notes';
 
@@ -201,6 +204,14 @@ export class StickyNotesView extends ItemView {
 			this.containerEl.ownerDocument,
 			'selectionchange',
 			() => this.activeEditor?.updateToolbar(),
+		);
+		// 点击编辑卡片以外的任意位置退出编辑态（捕获阶段，先于目标自身的
+		// click 处理；不阻止默认行为，点击仍然生效）。
+		this.registerDomEvent(
+			this.containerEl.ownerDocument,
+			'pointerdown',
+			(event) => this.handleOutsidePointerDown(event),
+			true,
 		);
 		// mtime 变化不一定会伴随 modify 事件（同步工具、外部程序 touch 文件），
 		// 窗口重新获得焦点时补一次新鲜度检查。
@@ -618,12 +629,157 @@ export class StickyNotesView extends ItemView {
 			this.normalizeEditorInlineTags(bodyEl);
 		}
 		cardEl.onclick = (event) => {
+			if (this.editingCardEl === cardEl) {
+				// 已经在这张卡的编辑态里：点它自己不该重建编辑器（会丢掉输入）
+				return;
+			}
 			const target = event.target as HTMLElement;
 			if (target.closest('button, input, textarea, [contenteditable="true"]')) {
 				return;
 			}
 			void this.renderEditor(cardEl, note);
 		};
+		// 右键菜单只在卡片本身上生效；编辑器内部放行浏览器的原生菜单，
+		// 否则会把"复制/粘贴"顶掉。
+		cardEl.oncontextmenu = (event) => {
+			if (
+				this.editingCardEl === cardEl &&
+				this.isInsideEditorTarget(event.target as Node | null)
+			) {
+				return;
+			}
+			event.preventDefault();
+			event.stopPropagation();
+			this.showCardMenu(event, note);
+		};
+	}
+
+	/** 右键菜单：目前只有删除，破坏性操作先走确认框。 */
+	private showCardMenu(event: MouseEvent, note: StickyNote): void {
+		const menu = new Menu();
+		menu.addItem((item) =>
+			item
+				.setTitle('删除便笺')
+				.setIcon('trash-2')
+				.setWarning(true)
+				.onClick(() => this.confirmDeleteNote(note)),
+		);
+		menu.showAtMouseEvent(event);
+	}
+
+	private confirmDeleteNote(note: StickyNote): void {
+		const file = this.collectionFile;
+		if (!file) {
+			return;
+		}
+		new ConfirmModal(this.app, {
+			title: '删除便笺',
+			message: `将从「${file.basename}」中移除章节「${note.title}」。此操作无法撤销。`,
+			confirmText: '删除',
+			cancelText: '取消',
+			onConfirm: () => void this.deleteNote(file, note),
+		}).open();
+	}
+
+	/** 删除便笺：按内容定位，找不到就放弃（不按序号盲删）。 */
+	private async deleteNote(file: TFile, note: StickyNote): Promise<void> {
+		try {
+			this.savingNote = true;
+			let removed = false;
+			await this.app.vault.process(file, (content) => {
+				const next = removeStickyNoteFromContent(content, note);
+				if (next === null) {
+					return content;
+				}
+				removed = true;
+				return next;
+			});
+			if (!removed) {
+				new Notice('这条便笺已在文件里被改动或删除。');
+				return;
+			}
+			delete this.plugin.settings.noteModified[note.id];
+			await this.plugin.saveSettings();
+			await this.refresh();
+			new Notice('便笺已删除。');
+		} catch (error) {
+			console.error(error);
+			new Notice('删除便笺失败。');
+		} finally {
+			this.savingNote = false;
+		}
+	}
+
+	/** 目标节点是否落在编辑器（正文或标题输入框）内部。 */
+	private isInsideEditorTarget(target: Node | null): boolean {
+		if (!target) {
+			return false;
+		}
+		const element =
+			target.nodeType === Node.ELEMENT_NODE
+				? (target as Element)
+				: target.parentElement;
+		return !!element?.closest(
+			'.onenote-sticky-note-editor-body, .onenote-sticky-note-editor-title',
+		);
+	}
+
+	/**
+	 * 点击卡片以外的位置退出编辑态，语义与「×」一致：不保存，回到静态卡片。
+	 *
+	 * 点其它卡片时直接放行——那边会走 renderEditor，由它把当前卡片复原，
+	 * 这里再插一手只会重复渲染。
+	 */
+	private handleOutsidePointerDown(event: PointerEvent): void {
+		const card = this.editingCardEl;
+		if (!card) {
+			return;
+		}
+		const target = event.target as Node | null;
+		if (!target || card.contains(target)) {
+			return;
+		}
+		const element =
+			target.nodeType === Node.ELEMENT_NODE
+				? (target as Element)
+				: target.parentElement;
+		if (element?.closest('.onenote-sticky-note-card')) {
+			return;
+		}
+		void this.cancelEdit({ notifyDiscard: true });
+	}
+
+	/**
+	 * 退出编辑并复原当前卡片。原地复原（不整表刷新）以保住滚动位置；
+	 * 但编辑期间若有外部改动，必须整表刷新才能显示最新内容。
+	 *
+	 * 语义与「×」一致：不保存。点卡片外部触发时额外提示一次，避免用户
+	 * 以为点外面会自动保存、结果改动被静默丢弃。
+	 */
+	private async cancelEdit(
+		options: { notifyDiscard?: boolean } = {},
+	): Promise<void> {
+		const card = this.editingCardEl;
+		if (!card) {
+			return;
+		}
+		const cardNoteId = card.dataset.noteId;
+		const note = cardNoteId
+			? this.notes.find((item) => item.id === cardNoteId)
+			: undefined;
+		const hadExternalChange = this.externalChangeNotified;
+		const discarded = options.notifyDiscard === true && this.editDirty;
+		this.resetEditorState();
+		if (hadExternalChange) {
+			await this.refresh();
+			return;
+		}
+		if (note) {
+			await this.renderStaticCard(card, note);
+		}
+		if (discarded) {
+			new Notice('已退出编辑，未保存的改动已丢弃。');
+		}
 	}
 
 	private async renderEditor(
@@ -748,7 +904,7 @@ export class StickyNotesView extends ItemView {
 		};
 		cancelButton.addEventListener('click', (event) => {
 			event.stopPropagation();
-			void this.refresh();
+			void this.cancelEdit();
 		});
 		saveButton.addEventListener('click', (event) => {
 			event.stopPropagation();
