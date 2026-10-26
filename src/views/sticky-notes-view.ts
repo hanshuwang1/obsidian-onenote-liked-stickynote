@@ -1,7 +1,5 @@
 import {
-	Component,
 	ItemView,
-	MarkdownRenderer,
 	Notice,
 	setIcon,
 	setTooltip,
@@ -475,14 +473,15 @@ export class StickyNotesView extends ItemView {
 		});
 
 		const bodyEl = cardEl.createDiv({ cls: 'onenote-sticky-note-card-body' });
-		const component = new Component();
-		this.addChild(component);
-		await MarkdownRenderer.renderMarkdown(
-			note.body || '（空便笺）',
-			bodyEl,
-			file.path,
-			component,
-		);
+		// 确定性渲染：与编辑器/保存序列化同一管线，保证“显示 = 编辑 = 文件”。
+		// MarkdownRenderer 在非严格换行设置下会把段内单 `\n` 折叠为空格，
+		// 用户看到的就是“换行丢了”；对短便笺也无富 markdown 解析的必要。
+		if (note.body.trim() === '') {
+			bodyEl.createDiv({ text: '（空便笺）', cls: 'onenote-sticky-note-card-empty' });
+		} else {
+			markdownToEditorHtml(note.body, bodyEl);
+			this.normalizeEditorInlineTags(bodyEl);
+		}
 		cardEl.onclick = (event) => {
 			const target = event.target as HTMLElement;
 			if (target.closest('button, input, textarea, [contenteditable="true"]')) {
@@ -575,20 +574,36 @@ export class StickyNotesView extends ItemView {
 			cls: 'mod-cta onenote-sticky-note-action-button',
 			attr: { type: 'button', 'aria-label': '保存便笺' },
 		});
+		const commitEdit = () => {
+				this.normalizeEditorBlocks(bodyInput);
+				void this.saveNote(
+					file,
+					note,
+					titleInput.value,
+					this.htmlToMarkdown(bodyInput),
+				);
+		};
 		cancelButton.addEventListener('click', (event) => {
-			event.stopPropagation();
-			void this.refresh();
+				event.stopPropagation();
+				void this.refresh();
 		});
 		saveButton.addEventListener('click', (event) => {
-			event.stopPropagation();
-			this.normalizeEditorBlocks(bodyInput);
-			void this.saveNote(
-				file,
-				note,
-				titleInput.value,
-				this.htmlToMarkdown(bodyInput),
-				);
+				event.stopPropagation();
+				commitEdit();
 		});
+		// Ctrl/Cmd+S 与对勾按钮等价。捕获阶段拦截，避免冒泡到
+		// Obsidian 全局的"保存当前文件"命令。
+		cardEl.addEventListener(
+				'keydown',
+				(event) => {
+					if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+						event.preventDefault();
+						event.stopPropagation();
+						commitEdit();
+					}
+				},
+				true,
+		);
 	}
 
 	private placeCaretAtEnd(element: HTMLElement): void {
@@ -642,7 +657,7 @@ export class StickyNotesView extends ItemView {
 		const button = toolbarEl.createEl('button', {
 			text: label,
 			cls: 'onenote-sticky-note-format-button',
-			attr: { type: 'button', 'aria-label': title },
+			attr: { type: 'button', 'aria-label': title, 'data-format': command },
 		});
 		button.addEventListener('mousedown', (event) => event.preventDefault());
 		button.addEventListener('click', (event) => {
@@ -656,7 +671,11 @@ export class StickyNotesView extends ItemView {
 		const button = toolbarEl.createEl('button', {
 			text: '≡',
 			cls: 'onenote-sticky-note-format-button',
-			attr: { type: 'button', 'aria-label': '项目符号列表' },
+			attr: {
+				type: 'button',
+				'aria-label': '项目符号列表',
+				'data-format': 'insertUnorderedList',
+			},
 		});
 		button.addEventListener('mousedown', (event) => event.preventDefault());
 		button.addEventListener('click', (event) => {
@@ -689,13 +708,11 @@ export class StickyNotesView extends ItemView {
 		if (!toolbar) {
 			return buttons;
 		}
-		const formatButtons = toolbar.querySelectorAll<HTMLButtonElement>(
-			'.onenote-sticky-note-format-button',
-		);
-		const formats = ['bold', 'italic', 'underline', 'strikeThrough', 'insertUnorderedList'];
-		formatButtons.forEach((button, index) => {
-			const format = formats[index];
-			if (format) {
+		// 按钮-格式映射用 data-format 显式声明，不依赖 DOM 顺序（顺序
+		// 耦合在增删按钮时会静默错位）。
+		toolbar.querySelectorAll<HTMLButtonElement>('[data-format]').forEach((button) => {
+			const format = button.dataset.format;
+			if (format && !buttons.has(format)) {
 				buttons.set(format, button);
 			}
 		});

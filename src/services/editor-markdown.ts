@@ -90,20 +90,82 @@ export function normalizeEditorBlocks(root: HTMLElement): void {
 			changed = true;
 		});
 	}
+
+	// 把 p/li 内的 <br>（Shift+Enter 产生）拆成兄弟块，使每个块恰是
+	// “一行”。br 与块之间可能隔着行内标签（<b>a<br>b</b>），拆分时
+	// 克隆行内祖先链，前后两半各自保持格式。祖先链中出现块标签则说明
+	// 该 br 属于嵌套块内部（由其宿主块自行处理），跳过。
+	// 逐个重新查询：拆分会新建块、搬移节点，快照式遍历会漏掉新块里
+	// 后续的 br；isConnected 不可用（root 可能游离于文档之外）。
+	let br: HTMLBRElement | null = root.querySelector('p br, li br');
+	while (br) {
+		const block = br.closest('p, li');
+		if (!block) {
+			break;
+		}
+		const chain: HTMLElement[] = [];
+		let escaped = false;
+		for (let cur = br.parentNode; cur && cur !== block; cur = cur.parentNode) {
+			if (!(cur instanceof HTMLElement) || BLOCK_TAGS.has(cur.tagName)) {
+				escaped = true;
+				break;
+			}
+			chain.unshift(cur);
+		}
+		if (escaped || (br.parentNode === null)) {
+			break;
+		}
+		const doc = root.ownerDocument;
+		const newBlock = doc.createElement(block.tagName);
+		const afterHosts: HTMLElement[] = [newBlock];
+		for (const ancestor of chain) {
+			const clone = ancestor.cloneNode(false) as HTMLElement;
+			(afterHosts[afterHosts.length - 1] ?? newBlock).appendChild(clone);
+			afterHosts.push(clone);
+		}
+		// 自内向外逐层：把“当前节点”之后的兄弟搬入对应克隆层。
+		// j = chain.length 对应最内层克隆（chain 为空时即 newBlock 本体，
+		// 承接 br 的直接兄弟）；j 递减到 0 时承接 c0 之后的块级兄弟。
+		let current: Node = br;
+		for (let j = chain.length; j >= 0; j--) {
+			const host = afterHosts[j] ?? newBlock;
+			const siblings: Node[] = [];
+			for (let sib = current.nextSibling; sib; sib = sib.nextSibling) {
+				siblings.push(sib);
+			}
+			for (const sib of siblings) {
+				host.appendChild(sib);
+			}
+			if (j > 0) {
+				current = chain[j - 1] as Node;
+			}
+		}
+		br.remove();
+		block.parentNode?.insertBefore(newBlock, block.nextSibling);
+		br = root.querySelector('p br, li br');
+	}
 }
 
 /**
- * 把 Obsidian markdown 渲染器产出的行内标签归一为 Chromium execCommand
- * 能识别/切换的标签：~~x~~ 被渲染为 <del>，但 strikeThrough 无法解除
- * 非 Chromium 自己创建的 <del>（对 <s> 则可以正常取消），故统一改写为 <s>。
+ * 把编辑器内可能出现的行内标签归一为 Chromium execCommand 能识别/切换
+ * 的标签：~~x~~ 的 <del>、markdown 渲染器的 <strong>/<em> 都统一改写为
+ * <s>/<b>/<i>（unstrike/unbold 对非 Chromium 自建标签不可靠）。
  */
 export function normalizeEditorInlineTags(root: HTMLElement): void {
-	root.querySelectorAll('del, strike').forEach((node) => {
-		const s = node.ownerDocument.createElement('s');
+	const replacements: Record<string, string> = {
+		del: 's',
+		strike: 's',
+		strong: 'b',
+		em: 'i',
+	};
+	root.querySelectorAll('del, strike, strong, em').forEach((node) => {
+		const replacementTag = replacements[node.tagName.toLowerCase()];
+		if (!replacementTag) return;
+		const replacement = node.ownerDocument.createElement(replacementTag);
 		while (node.firstChild) {
-			s.appendChild(node.firstChild);
+			replacement.appendChild(node.firstChild);
 		}
-		node.replaceWith(s);
+		node.replaceWith(replacement);
 	});
 }
 
@@ -114,17 +176,20 @@ function escapeHtml(text: string): string {
 		.replace(/>/g, '&gt;');
 }
 
-/** 行内标记模式：与 htmlToMarkdown 的行内序列化严格互逆。 */
+/** 行内标记模式：与 htmlToMarkdown 的行内序列化严格互逆。产出标签
+ * 统一为 Chromium execCommand 可靠切换的 b/i/s/u。
+ */
 const INLINE_PATTERNS: ReadonlyArray<{ pattern: RegExp; tag: string }> = [
-	{ pattern: /\*\*([^*]+)\*\*/, tag: 'strong' },
-	{ pattern: /\*([^*]+)\*/, tag: 'em' },
+	{ pattern: /\*\*([^*]+)\*\*/, tag: 'b' },
+	{ pattern: /\*([^*]+)\*/, tag: 'i' },
 	{ pattern: /~~([^~]+)~~/, tag: 's' },
 	{ pattern: /<u>([\s\S]*?)<\/u>/, tag: 'u' },
 ];
 
-/**
- * 行内 markdown → DOM 节点（纯 DOM 构建，不用 innerHTML，天然免注入）。
- * 递归支持嵌套标记（如 **粗 *斜***）。
+/** 行内 markdown → DOM 节点（纯 DOM 构建，不用 innerHTML，天然免注入）。
+ * 递归支持嵌套标记（如 **粗 *斜***）。产出标签用 b/i/s/u（而非
+ * strong/em/del）：编辑器靠 Chromium execCommand 切换格式，unbold/
+ * unstrike 对非 Chromium 自建标签（strong/del）不可靠。
  */
 function appendInlineMarkdown(target: HTMLElement, text: string): void {
 	const doc = target.ownerDocument;
@@ -160,9 +225,9 @@ function appendInlineMarkdown(target: HTMLElement, text: string): void {
  *
  * 之前编辑器复用 MarkdownRenderer，但其 DOM 形状不受控（段内换行、
  * 硬换行的输出结构随版本变化），序列化回来会丢换行。这里用与
- * htmlToMarkdown 严格互逆的规则自行构建：
- * - 空行分块；每块要么全为 `- ` 列表行（→ ul/li），要么是一个段落；
- * - 段内行以 <br> 连接（保存时序列化为硬换行 `  \n`）。
+ * htmlToMarkdown 严格互逆的规则自行构建：**每个非空行独立成块**——
+ * `- ` 开头的行 → ul/li，其余行 → <p>。空行只是分隔符，不保留
+ * （保存时所有行边界统一写为段落边界）。
  */
 export function markdownToEditorHtml(
 	markdown: string,
@@ -172,41 +237,27 @@ export function markdownToEditorHtml(
 	const doc = container.ownerDocument;
 	const lines = markdown.replace(/\r/g, '').split('\n');
 
-	const blocks: string[][] = [];
-	let current: string[] = [];
-	for (const line of lines) {
-		if (line.trim() === '') {
-			if (current.length > 0) {
-				blocks.push(current);
-				current = [];
-			}
-		} else {
-			current.push(line);
-		}
-	}
-	if (current.length > 0) {
-		blocks.push(current);
-	}
-
-	for (const block of blocks) {
-		const isList = block.every((line) => /^[-*+] /.test(line));
-		if (isList) {
-			const ul = doc.createElement('ul');
-			for (const line of block) {
-				const li = doc.createElement('li');
-				appendInlineMarkdown(li, line.replace(/^[-*+] /, ''));
-				ul.appendChild(li);
-			}
-			container.appendChild(ul);
+	let ul: HTMLUListElement | null = null;
+	for (const rawLine of lines) {
+		const line = rawLine.trim();
+		if (line === '') {
+			ul = null;
 			continue;
 		}
-		const p = doc.createElement('p');
-		block.forEach((line, index) => {
-			if (index > 0) {
-				p.appendChild(doc.createElement('br'));
+		const listMatch = line.match(/^[-*+]\s+(.*)$/);
+		if (listMatch) {
+			if (!ul) {
+				ul = doc.createElement('ul');
+				container.appendChild(ul);
 			}
-			appendInlineMarkdown(p, line);
-		});
+			const li = doc.createElement('li');
+			appendInlineMarkdown(li, listMatch[1] ?? '');
+			ul.appendChild(li);
+			continue;
+		}
+		ul = null;
+		const p = doc.createElement('p');
+		appendInlineMarkdown(p, line);
 		container.appendChild(p);
 	}
 }
@@ -214,10 +265,11 @@ export function markdownToEditorHtml(
 /**
  * 编辑器 DOM → Markdown。
  *
- * 换行语义：`<p>` 之间输出空行（段落边界）；`<p>` 内部的 `<br>` 输出
- * 行尾两空格 + 换行（Markdown 硬换行）。空段落输出空行。Obsidian 默认
- * （非严格换行）把段内单个 `\n` 渲染为空格，因此单个 `\n` 会在重新
- * 渲染时丢失换行 —— 段内换行必须写成硬换行。
+ * 换行语义：`<p>`/`<li>` 边界输出空行（段落边界）。行尾两空格硬换行
+ * 依赖渲染器保留行尾空白，在 Linter 类插件/编辑器自动裁剪下会退化为
+ * 单 `\n`，非严格换行设置下重渲染就会折叠成一行——因此段内换行
+ * （Shift+Enter 的 `<br>` 已在 normalize 阶段拆成独立块）统一序列化
+ * 为段落边界，完全不依赖行尾空格。
  */
 export function htmlToMarkdown(element: HTMLElement): string {
 	const inlineConvert = (node: Node): string => {
@@ -271,11 +323,13 @@ export function htmlToMarkdown(element: HTMLElement): string {
 		}
 
 		// 行首/行尾的 <br> 是残留结构（空行除外），去掉再按段落语义拼接。
+		// （normalize 阶段已把段内 <br> 拆成独立块，此处理论无 `\n`；
+		// 兜底仍按段落边界处理，绝不再产出依赖行尾空格的硬换行。）
 		const content = inlineConvert(node)
 			.replace(/[ \t\u00A0]+\n/g, '\n')
 			.replace(/^\n+/, '')
 			.replace(/\n+$/, '')
-			.replace(/\n/g, '  \n');
+			.replace(/\n/g, '\n\n');
 		if (node.tagName === 'LI') {
 			return `- ${content}\n`;
 		}

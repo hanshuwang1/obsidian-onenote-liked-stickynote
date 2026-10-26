@@ -17,6 +17,8 @@ var __edBundle = (() => {
     return to;
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // src/services/editor-markdown.ts
   var editor_markdown_exports = {};
   __export(editor_markdown_exports, {
     htmlToMarkdown: () => htmlToMarkdown,
@@ -24,7 +26,7 @@ var __edBundle = (() => {
     normalizeEditorBlocks: () => normalizeEditorBlocks,
     normalizeEditorInlineTags: () => normalizeEditorInlineTags
   });
-  const BLOCK_TAGS = /* @__PURE__ */ new Set([
+  var BLOCK_TAGS = /* @__PURE__ */ new Set([
     "P",
     "DIV",
     "LI",
@@ -40,7 +42,7 @@ var __edBundle = (() => {
     "PRE",
     "HR"
   ]);
-  const STYLED_INLINE_TAGS = /* @__PURE__ */ new Set([
+  var STYLED_INLINE_TAGS = /* @__PURE__ */ new Set([
     "B",
     "STRONG",
     "I",
@@ -112,19 +114,71 @@ var __edBundle = (() => {
         changed = true;
       });
     }
+    let br = root.querySelector("p br, li br");
+    while (br) {
+      const block = br.closest("p, li");
+      if (!block) {
+        break;
+      }
+      const chain = [];
+      let escaped = false;
+      for (let cur = br.parentNode; cur && cur !== block; cur = cur.parentNode) {
+        if (!(cur instanceof HTMLElement) || BLOCK_TAGS.has(cur.tagName)) {
+          escaped = true;
+          break;
+        }
+        chain.unshift(cur);
+      }
+      if (escaped || br.parentNode === null) {
+        break;
+      }
+      const doc = root.ownerDocument;
+      const newBlock = doc.createElement(block.tagName);
+      const afterHosts = [newBlock];
+      for (const ancestor of chain) {
+        const clone = ancestor.cloneNode(false);
+        (afterHosts[afterHosts.length - 1] ?? newBlock).appendChild(clone);
+        afterHosts.push(clone);
+      }
+      let current = br;
+      for (let j = chain.length; j >= 0; j--) {
+        const host = afterHosts[j] ?? newBlock;
+        const siblings = [];
+        for (let sib = current.nextSibling; sib; sib = sib.nextSibling) {
+          siblings.push(sib);
+        }
+        for (const sib of siblings) {
+          host.appendChild(sib);
+        }
+        if (j > 0) {
+          current = chain[j - 1];
+        }
+      }
+      br.remove();
+      block.parentNode?.insertBefore(newBlock, block.nextSibling);
+      br = root.querySelector("p br, li br");
+    }
   }
   function normalizeEditorInlineTags(root) {
-    root.querySelectorAll("del, strike").forEach((node) => {
-      const s = node.ownerDocument.createElement("s");
+    const replacements = {
+      del: "s",
+      strike: "s",
+      strong: "b",
+      em: "i"
+    };
+    root.querySelectorAll("del, strike, strong, em").forEach((node) => {
+      const replacementTag = replacements[node.tagName.toLowerCase()];
+      if (!replacementTag) return;
+      const replacement = node.ownerDocument.createElement(replacementTag);
       while (node.firstChild) {
-        s.appendChild(node.firstChild);
+        replacement.appendChild(node.firstChild);
       }
-      node.replaceWith(s);
+      node.replaceWith(replacement);
     });
   }
-  const INLINE_PATTERNS = [
-    { pattern: /\*\*([^*]+)\*\*/, tag: "strong" },
-    { pattern: /\*([^*]+)\*/, tag: "em" },
+  var INLINE_PATTERNS = [
+    { pattern: /\*\*([^*]+)\*\*/, tag: "b" },
+    { pattern: /\*([^*]+)\*/, tag: "i" },
     { pattern: /~~([^~]+)~~/, tag: "s" },
     { pattern: /<u>([\s\S]*?)<\/u>/, tag: "u" }
   ];
@@ -159,40 +213,27 @@ var __edBundle = (() => {
     container.replaceChildren();
     const doc = container.ownerDocument;
     const lines = markdown.replace(/\r/g, "").split("\n");
-    const blocks = [];
-    let current = [];
-    for (const line of lines) {
-      if (line.trim() === "") {
-        if (current.length > 0) {
-          blocks.push(current);
-          current = [];
-        }
-      } else {
-        current.push(line);
-      }
-    }
-    if (current.length > 0) {
-      blocks.push(current);
-    }
-    for (const block of blocks) {
-      const isList = block.every((line) => /^[-*+] /.test(line));
-      if (isList) {
-        const ul = doc.createElement("ul");
-        for (const line of block) {
-          const li = doc.createElement("li");
-          appendInlineMarkdown(li, line.replace(/^[-*+] /, ""));
-          ul.appendChild(li);
-        }
-        container.appendChild(ul);
+    let ul = null;
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (line === "") {
+        ul = null;
         continue;
       }
-      const p = doc.createElement("p");
-      block.forEach((line, index) => {
-        if (index > 0) {
-          p.appendChild(doc.createElement("br"));
+      const listMatch = line.match(/^[-*+]\s+(.*)$/);
+      if (listMatch) {
+        if (!ul) {
+          ul = doc.createElement("ul");
+          container.appendChild(ul);
         }
-        appendInlineMarkdown(p, line);
-      });
+        const li = doc.createElement("li");
+        appendInlineMarkdown(li, listMatch[1] ?? "");
+        ul.appendChild(li);
+        continue;
+      }
+      ul = null;
+      const p = doc.createElement("p");
+      appendInlineMarkdown(p, line);
       container.appendChild(p);
     }
   }
@@ -235,7 +276,7 @@ var __edBundle = (() => {
       if (node.tagName === "UL" || node.tagName === "OL") {
         return Array.from(node.childNodes).map(blockConvert).join("").trimEnd() + "\n\n";
       }
-      const content = inlineConvert(node).replace(/[ \t\u00A0]+\n/g, "\n").replace(/^\n+/, "").replace(/\n+$/, "").replace(/\n/g, "  \n");
+      const content = inlineConvert(node).replace(/[ \t\u00A0]+\n/g, "\n").replace(/^\n+/, "").replace(/\n+$/, "").replace(/\n/g, "\n\n");
       if (node.tagName === "LI") {
         return `- ${content}
 `;

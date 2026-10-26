@@ -258,6 +258,25 @@
 	word-break: break-word;
 }
 
+/* 静态卡片正文由自研确定性渲染产出裸 p/ul（不经过 Obsidian markdown
+   渲染区，无其默认样式），需要显式的段落与列表样式。 */
+.onenote-sticky-note-card-body p {
+	margin: 0 0 8px;
+}
+
+.onenote-sticky-note-card-body ul {
+	margin: 0 0 8px;
+	padding-left: 20px;
+}
+
+.onenote-sticky-note-card-body li {
+	margin: 0;
+}
+
+.onenote-sticky-note-card-empty {
+	color: var(--text-faint);
+}
+
 .onenote-sticky-note-editor-title,
 .onenote-sticky-note-editor-body {
 	box-sizing: border-box;
