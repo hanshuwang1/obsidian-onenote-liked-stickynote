@@ -1,92 +1,174 @@
-# Obsidian Sample Plugin
+# OneNote-like Sticky Notes
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+把 Markdown 文件里的每个二级标题(`##`)当作一张便笺卡片,显示在一个独立的,可吸附的桌面便笺窗口里.交互参考 Microsoft 便笺(Sticky Notes):卡片流 + 原位编辑 + 桌面角落吸附.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+- **卡片流** ---- 集合文件里的所有 `##` 章节就是一叠卡片,最新添加的排在最上面
+- **独立弹窗** ---- 一键弹出便笺窗口并吸附到屏幕右下角;拖动,改尺寸都会被记住
+- **搜索** ---- 按标题和正文即时过滤,只在前端过滤,不重读文件
+- **原位编辑** ---- 点卡片就地展开编辑器,按**行**为单位加粗 / 斜体 / 下划线 / 删除线 / 项目符号
+- **右键删除** ---- 从集合文件里移除该章节,带确认框
+- **纯本地** ---- 不发任何网络请求,数据就是你自己 vault 里的一个 Markdown 文件
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
+> 仅支持桌面端(依赖 Obsidian 的 popout 窗口与 Electron 能力),`isDesktopOnly: true`.
 
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open modal (simple)" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and outputs a Notice on click.
-- Registers a global interval which logs 'setInterval' to the console.
+## 数据怎么存
 
-## First time developing plugins?
+插件不改动你的目录结构,也不引入 frontmatter.你只需要在 vault 里准备**一个** Markdown 文件作为"便笺集合",用二级标题分隔便笺:
 
-Quick starting guide for new plugin devs:
+```markdown
+# 便笺集合
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `src/main.ts` to `main.js`.
-- Make changes to `src/main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+这里可以写说明,第一个 ## 之前的内容不会显示成便笺.
 
-## Releasing new releases
+## 2026-09-18 14:22
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+买牛奶
+顺便看下路由器的固件版本
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+## 读书笔记
 
-## Adding your plugin to the community plugin list
-
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
-
-## How to use
-
-- Clone this repo.
-- Make sure your NodeJS is at least v18 (`node --version`).
-- `npm i` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
-
-## Manually installing the plugin
-
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
-
-## Improve code quality with eslint
-
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code.
-- This project already has eslint preconfigured, you can invoke a check by running`npm run lint`
-- Together with a custom eslint [plugin](https://github.com/obsidianmd/eslint-plugin) for Obsidan specific code guidelines.
-- A GitHub action is preconfigured to automatically lint every commit on all branches.
-
-## Funding URL
-
-You can include funding URLs where people who use your plugin can financially support it.
-
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
-
-```json
-{
-	"fundingUrl": "https://buymeacoffee.com"
-}
+- 卡片式界面要能扫读
+- 编辑要在原位完成
 ```
 
-If you have multiple URLs, you can also do:
+约定如下:
 
-```json
-{
-	"fundingUrl": {
-		"Buy Me a Coffee": "https://buymeacoffee.com",
-		"GitHub Sponsor": "https://github.com/sponsors",
-		"Patreon": "https://www.patreon.com/"
-	}
-}
+| 规则 | 说明 |
+| --- | --- |
+| 便笺分隔 | 只有 `##` 二级标题会被识别为便笺边界;`#` 和其他级别不参与 |
+| 便笺正文 | 标题行到下一个 `##` 之间的内容 |
+| 空的章节 | 正文为空时卡片显示"(空便笺)" |
+| 文件头 | 第一个 `##` 之前的内容(标题,说明)保留在文件里,但不会渲染成卡片 |
+| 完全相同的章节 | 允许存在;内部用"内容哈希 + 出现序号"区分,不会互相写错 |
+
+### 正文的格式约定
+
+编辑器按**行**工作,所以正文的语义是"每行一个段落,空行只是分隔符"(空行不会被写回文件).格式与 Markdown 的对应关系:
+
+| 编辑器里 | 文件里写成 |
+| --- | --- |
+| **加粗** | `**文本**` |
+| *斜体* | `*文本*` |
+| ~~删除线~~ | `~~文本~~` |
+| 下划线 | `<u>文本</u>`(Markdown 本身没有下划线语法) |
+| 项目符号列表 | `- 文本` |
+
+编辑器里的 `<div>`,`<br>`,`<strong>` 等结构在保存前会统一归一化,因此"卡片上看到的""编辑器里显示的""文件里写下的"三者一致,不会因为段内换行在别的渲染器里被折叠成一行.
+
+### 卡片右上角的时间来自哪里
+
+按优先级:
+
+1. 插件记录的这一条在**本插件里保存**的时间(存在插件 `data.json` 的 `noteModified` 里,键是章节内容哈希)
+2. 标题本身就是时间戳时("新建便笺"写入的 `YYYY-MM-DD HH:mm`,也识别 `YYYY-MM-DD`,`YYYYMMDD-HHMM`)用标题时间
+3. 都没有则**不显示日期**----而不是拿整文件修改时间冒充(那会让所有卡片显示同一个日期)
+
+因此手工新建,且标题不是时间格式的便笺,在第一次通过插件保存之前不会有日期.集合文件里出现过的便笺被改写后,对应的旧记录会被自动清理,不会让 `data.json` 无限增长.
+
+## 安装
+
+### 手动安装:
+
+1. 下载或构建出 `main.js`,`manifest.json`,`styles.css`(`npm run build` 会在仓库根目录生成 `main.js`)
+2. 放进 `<你的 Vault>/.obsidian/plugins/obsidian-onenote-liked-stickynote/`
+3. 在 **设置 → 第三方插件** 里重新载入并启用
+4. 在 **设置 → OneNote-like Sticky Notes** 里选择"便笺集合文件"
+
+最低版本:Obsidian **1.7.2**(桌面端).
+
+### 市场
+
+## 使用
+
+| 操作 | 位置 | 说明 |
+| --- | --- | --- |
+| 打开便笺窗口 | 左侧栏便笺图标,或命令面板的"打开便笺" | 已打开时只把窗口提到前面,不会重复创建 |
+| 新建便笺 | 头部 `+` | 在集合文件末尾追加 `## YYYY-MM-DD HH:mm` |
+| 搜索 | 头部放大镜 | 点开输入框,按标题 + 正文过滤;再点一次清空并收起 |
+| 吸附到右下角 | 头部 `>` | 记住当前位置再吸附;吸附期间窗口锁定不可拖动;再点一次回到原位置 |
+| 移动窗口 | 拖标题栏或卡片区上方空白 | 原生拖拽区;窗口内有交互元素,不会被拖动吞掉点击 |
+| 编辑 | 点卡片任意位置 | 就地展开编辑器,光标落在正文末尾 |
+| 加粗 / 斜体 / 下划线 / 删除线 / 列表 | 编辑器底部工具栏 | **以整行为单位**切换,不是选区;按钮高亮反映当前行的状态 |
+| 保存 | 底部 `✓` 或 `Ctrl/Cmd + S` | 写回集合文件并刷新 |
+| 取消 | 底部 `×` | 放弃修改,卡片复原 |
+| 退出编辑 | 点卡片以外的任意位置 | 同 `×`:**不保存**;若有未保存输入会提示一次 |
+| 删除便笺 | 在卡片上右键 → "删除便笺" | 确认后从集合文件移除该章节 |
+
+窗口尺寸:设置里填 `0` 表示按屏幕比例自动(宽 320–560,高 480–840 之间取值);手动拖动窗口边缘改尺寸后会自动写回设置,下次打开保持.
+
+## 行为与边界
+
+这几条是刻意的设计,用之前值得知道:
+
+- **保存按内容定位,不按序号**.编辑期间文件里插入/删除了别的便笺也不影响,写回的一定是你正在编辑的那一条.
+- **目标便笺被外部改动过就拒绝保存**.保存和删除都会先确认目标章节内容仍然存在;已经被改写或删掉时操作被取消,你输入的内容留在卡片里,不会覆盖别人的内容.
+- **编辑期间收到外部改动不强行刷新**.没有未保存输入时会正常刷新;有未保存输入时先保留编辑器并提示一次,保存/取消后再显示最新内容.
+- **退出编辑即放弃修改**.`×` 和"点卡片外部"都不保存.需要保存请按 `✓` 或 `Ctrl/Cmd + S`.
+- **删除不可撤销**.确认框只是防误触,删掉的章节只能靠 Obsidian 的文件恢复/版本控制找回.
+- **便笺窗口是单标签窗口**.标签头被隐藏,其他插件在启动时塞进来的标签页会被清理(必要时先把文件在主窗口重新打开,避免丢内容).
+
+## 设置
+
+| 设置项 | 说明 |
+| --- | --- |
+| 便笺集合文件 | 用 `##` 分隔便笺的 Markdown 文件;未选择时视图会提示先去设置 |
+| 窗口宽度 | 像素;`0` = 按屏幕比例自动;手动改窗口后自动更新 |
+| 窗口高度 | 同上 |
+
+## 已知限制
+
+- 只识别 `##` 分隔;**代码块里的 `##` 也会被当成便笺边界**(解析是逐行匹配标题,不做代码围栏感知)
+- 不支持图片,附件,表格等富内容----卡片是文本卡片
+- 不做虚拟滚动:便笺很多时所有卡片会一次性渲染,超大集合文件(数千条)可能变卡
+- 没有拖拽排序,置顶,颜色分类,来源链接(这些是后续方向,见 `OneNote-stickynote-description.md`)
+- 窗口标题栏是原生拖拽区,点击那里不会触发"点外部退出编辑"
+
+## 开发
+
+```bash
+npm install
+npm run dev     # esbuild watch,改动即生成 main.js
+npm run build   # tsc 类型检查 + 生产构建
+npm run lint    # eslint(含 eslint-plugin-obsidianmd)
 ```
 
-## API Documentation
+目录结构:
 
-See https://docs.obsidian.md
+```
+src/
+  main.ts                    # 仅插件生命周期:注册视图,命令,设置页
+  settings.ts                # 设置页与默认值
+  types/
+    note.ts                  # StickyNote(含内容哈希 id,章节原文,出现序号)
+    settings.ts
+  services/
+    note-sections.ts         # 章节切分 + 内容哈希 id + 定位(解析/序列化共用)
+    note-parser.ts           # 文本 → 卡片;标题时间戳解析
+    note-serializer.ts       # 卡片 → 文本:改写 / 删除 / 追加
+    editor-markdown.ts       # contenteditable DOM 归一化 ⇄ Markdown(纯 DOM,不依赖 Obsidian API)
+  views/
+    sticky-notes-view.ts     # 卡片列表,原位编辑器,搜索,吸附与窗口几何
+  ui/
+    confirm-modal.ts         # 破坏性操作确认框
+```
+
+几个实现上的约定,改代码前值得知道:
+
+- `main.ts` 只做注册与窗口管理,功能逻辑都在 `services/` 和 `views/`
+- `note-sections.ts` 是解析与序列化**唯一**的切分规则来源,两边不要各写一遍标题正则
+- `editor-markdown.ts` 刻意不引用 Obsidian API,保持可在任意 Document 里跑
+- **弹窗是独立的 window(独立 realm)**,`instanceof HTMLElement` 在弹窗里恒为 `false`;DOM 判定要么用 `nodeType`,要么用 Obsidian 的 `instanceOf()`.踩过这个坑的地方都已标注注释
+
+## 发布
+
+版本号需要同时出现在 `manifest.json` 和 `versions.json`:
+
+```bash
+npm version patch   # 触发 version-bump.mjs,同步 manifest.json 与 versions.json
+```
+
+GitHub Release 的 tag 必须与 `manifest.json` 的 `version` 完全一致(**不要**加 `v` 前缀),并附上 `main.js`,`manifest.json`,`styles.css` 三个文件.
+
+## 许可
+
+0-BSD,见 [LICENSE](LICENSE).

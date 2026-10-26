@@ -71,7 +71,7 @@ export default class MyPlugin extends Plugin {
 		}
 
 		await leaf.setViewState({ type: VIEW_TYPE_STICKY_NOTES, active: true });
-		this.app.workspace.revealLeaf(leaf);
+		void this.app.workspace.revealLeaf(leaf);
 		void this.evictForeignLeavesFromStickyPopout();
 		const view = leaf.view;
 		if (shouldSnap && view instanceof StickyNotesView) {
