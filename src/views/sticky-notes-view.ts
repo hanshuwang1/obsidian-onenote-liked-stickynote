@@ -36,6 +36,24 @@ const PROGRAMMATIC_WINDOW_OP_MS = 350;
 const WINDOW_OP_SETTLE_MS = 120;
 /** Electron 探测失败后的冷却期（毫秒），期间复用 null 不再重复探测。 */
 const ELECTRON_PROBE_COOLDOWN_MS = 10000;
+/**
+ * 搜索输入的去抖窗口（毫秒）。每敲一个字符就销毁并重建整个卡片列表，
+ * 分配量正比于便笺数 × 每卡节点数，连续输入会造成明显的 GC 抖动。
+ */
+const SEARCH_DEBOUNCE_MS = 150;
+/**
+ * 便笺时间的格式化器。`Intl.DateTimeFormat` 构造代价不低（要初始化 locale
+ * 数据），按卡片创建等于每次渲染产生 N 个对象（N = 卡片数）——提到模块级
+ * 只建一次。
+ */
+const CLOCK_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
+	hour: '2-digit',
+	minute: '2-digit',
+});
+const DATE_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
+	month: 'numeric',
+	day: 'numeric',
+});
 
 /**
  * 桌面端尝试取当前 popout 的 Electron BrowserWindow：setBounds 能一次
@@ -142,6 +160,19 @@ export class StickyNotesView extends ItemView {
 	 * 并且一直拖住已脱离文档的 bodyInput 引用。
 	 */
 	private activeEditor: { updateToolbar: () => void } | null = null;
+	/**
+	 * 当前编辑器的 Ctrl/Cmd+S 拦截器。
+	 *
+	 * cardEl 是跨渲染复用的同一个元素——静态卡片和编辑器都只是对它
+	 * `cardEl.empty()` 换子节点，`addEventListener` 不会因为子节点被清空而
+	 * 解绑。不显式摘除的话，每进一次编辑态就多挂一个监听器，其闭包钉住
+	 * bodyInput/titleInput，使整棵已脱离文档的编辑器 DOM 无法回收。
+	 * （旁边的 onclick/oncontextmenu 是属性赋值、会互相覆盖，所以不用管。）
+	 */
+	private editorKeydown: {
+		card: HTMLElement;
+		handler: (event: KeyboardEvent) => void;
+	} | null = null;
 	/** 编辑器里存在未保存的输入。 */
 	private editDirty = false;
 	/** 外部改动提醒只弹一次，避免输入过程中反复打扰。 */
@@ -150,6 +181,17 @@ export class StickyNotesView extends ItemView {
 	private savingNote = false;
 	/** 上一次渲染时集合文件的 mtime，用于窗口重新获得焦点时的新鲜度检查。 */
 	private renderedMtime = 0;
+	/** 搜索输入的去抖定时器；视图关闭或重新渲染时清除。 */
+	private searchDebounceTimer: number | null = null;
+	/**
+	 * 上一次真正渲染出来的搜索结果（查询词 + 便笺 id 列表）。结果没变时跳过
+	 * 重建：既省一次全量 DOM 分配，也保住滚动位置。
+	 */
+	private renderedResult: { query: string; ids: string[] } | null = null;
+	/** 正在进行的那一轮刷新。 */
+	private refreshRunning: Promise<void> | null = null;
+	/** 本轮结束后是否还要再跑一次（合并同一时刻到达的多次刷新请求）。 */
+	private refreshAgain = false;
 	private snapButtonEl: HTMLButtonElement | null = null;
 	private snapSavedPosition: { left: number; top: number } | null = null;
 	private headerDragCleanup: (() => void) | null = null;
@@ -228,6 +270,9 @@ export class StickyNotesView extends ItemView {
 	onClose(): Promise<void> {
 		this.headerDragCleanup?.();
 		this.headerDragCleanup = null;
+		// 编辑中关窗：摘掉 cardEl 上的 Ctrl/Cmd+S 拦截器，不留悬空闭包。
+		this.detachEditorKeydown();
+		this.cancelScheduledSearch();
 		if (this.sizeCaptureTimer !== null && this.sizeTimerWin) {
 			this.sizeTimerWin.clearTimeout(this.sizeCaptureTimer);
 			this.sizeCaptureTimer = null;
@@ -241,8 +286,37 @@ export class StickyNotesView extends ItemView {
 		return Promise.resolve();
 	}
 
+	/**
+	 * 刷新视图（读盘 + 重建）。
+	 *
+	 * 并发调用会被合并：同一时刻最多跑一轮，期间的后续请求合并成"本轮结束后
+	 * 再跑一次"。modify 事件、焦点回归、保存、删除都可能几乎同时触发刷新，
+	 * 不合并就会叠加出多次全量解析和 DOM 构建（瞬时内存尖峰）。
+	 */
 	async refresh(): Promise<void> {
+		if (this.refreshRunning) {
+			this.refreshAgain = true;
+			return this.refreshRunning;
+		}
+		this.refreshRunning = this.runRefreshLoop();
+		return this.refreshRunning;
+	}
+
+	private async runRefreshLoop(): Promise<void> {
+		try {
+			do {
+				this.refreshAgain = false;
+				await this.renderFromDisk();
+			} while (this.refreshAgain);
+		} finally {
+			this.refreshRunning = null;
+		}
+	}
+
+	private async renderFromDisk(): Promise<void> {
 		const refreshVersion = ++this.refreshVersion;
+		this.cancelScheduledSearch();
+		this.renderedResult = null;
 
 		const filePath = this.plugin.settings.collectionFile;
 		if (!filePath) {
@@ -324,12 +398,46 @@ export class StickyNotesView extends ItemView {
 		}
 	}
 
-	/** 退出编辑态。selectionchange 监听器只注册了一次，这里只清掉转发目标。 */
+	/**
+	 * 退出编辑态。selectionchange 监听器只注册了一次，这里只清掉转发目标；
+	 * 挂在 cardEl 上的 Ctrl/Cmd+S 拦截器则必须显式摘除（见 editorKeydown）。
+	 */
 	private resetEditorState(): void {
+		this.detachEditorKeydown();
 		this.editingCardEl = null;
 		this.activeEditor = null;
 		this.editDirty = false;
 		this.externalChangeNotified = false;
+	}
+
+	/**
+	 * 挂上 Ctrl/Cmd+S 拦截器（捕获阶段，避免冒泡到 Obsidian 全局的
+	 * "保存当前文件"命令）。挂之前先摘掉上一轮，保证 cardEl 上永远只有一份。
+	 */
+	private attachEditorKeydown(
+		cardEl: HTMLElement,
+		commitEdit: () => void,
+	): void {
+		this.detachEditorKeydown();
+		const handler = (event: KeyboardEvent) => {
+			if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+				event.preventDefault();
+				event.stopPropagation();
+				commitEdit();
+			}
+		};
+		cardEl.addEventListener('keydown', handler, true);
+		this.editorKeydown = { card: cardEl, handler };
+	}
+
+	/** 摘除当前编辑器的 Ctrl/Cmd+S 拦截器（幂等）。 */
+	private detachEditorKeydown(): void {
+		const attached = this.editorKeydown;
+		if (!attached) {
+			return;
+		}
+		attached.card.removeEventListener('keydown', attached.handler, true);
+		this.editorKeydown = null;
 	}
 
 	/**
@@ -375,16 +483,7 @@ export class StickyNotesView extends ItemView {
 			date.getFullYear() === now.getFullYear() &&
 			date.getMonth() === now.getMonth() &&
 			date.getDate() === now.getDate();
-		if (isToday) {
-			return new Intl.DateTimeFormat('zh-CN', {
-				hour: '2-digit',
-				minute: '2-digit',
-			}).format(date);
-		}
-		return new Intl.DateTimeFormat('zh-CN', {
-			month: 'numeric',
-			day: 'numeric',
-		}).format(date);
+		return (isToday ? CLOCK_FORMATTER : DATE_FORMATTER).format(date);
 	}
 
 	private formatShortPath(filePath: string): string {
@@ -449,7 +548,7 @@ export class StickyNotesView extends ItemView {
 		});
 		searchEl.addEventListener('input', () => {
 			this.searchQuery = searchEl.value;
-			this.replaceResults();
+			this.scheduleSearchResults();
 		});
 		this.setupHeaderDrag(headerEl);
 	}
@@ -552,12 +651,46 @@ export class StickyNotesView extends ItemView {
 		};
 	}
 
+	/** 按查询词过滤便笺：标题 + 正文，忽略大小写。 */
+	private filterNotes(notes: StickyNote[], query: string): StickyNote[] {
+		if (!query) {
+			return notes;
+		}
+		return notes.filter((note) =>
+			`${note.title}\n${note.body}`.toLocaleLowerCase().includes(query),
+		);
+	}
+
+	/**
+	 * 新结果与"当前已渲染的结果"是否一致（按 id 集合比较，不关心顺序）。
+	 * 一致就没必要动 DOM。
+	 */
+	private isSameRenderedResult(query: string, notes: StickyNote[]): boolean {
+		const rendered = this.renderedResult;
+		if (
+			!rendered ||
+			rendered.query !== query ||
+			rendered.ids.length !== notes.length
+		) {
+			return false;
+		}
+		const ids = new Set(rendered.ids);
+		return notes.every((note) => ids.has(note.id));
+	}
+
 	private replaceResults(): void {
+		const query = this.searchQuery.trim().toLocaleLowerCase();
+		// 结果集没变就保留现有 DOM：省一次全量重建，滚动位置也不会跳回顶部。
+		if (this.isSameRenderedResult(query, this.filterNotes(this.notes, query))) {
+			return;
+		}
+
 		this.contentEl
 			.querySelector('.onenote-sticky-notes-scroll, .onenote-sticky-notes-message')
 			?.remove();
 		this.resetEditorState();
 		this.notesScrollEl = null;
+		this.renderedResult = null;
 		if (this.collectionFile) {
 			this.renderNotes(this.notes);
 		}
@@ -565,13 +698,10 @@ export class StickyNotesView extends ItemView {
 
 	private renderNotes(notes: StickyNote[]): void {
 		const query = this.searchQuery.trim().toLocaleLowerCase();
-		const filteredNotes = query
-			? notes.filter((note) =>
-				`${note.title}\n${note.body}`.toLocaleLowerCase().includes(query),
-			)
-			: notes;
+		const filteredNotes = this.filterNotes(notes, query);
 
 		if (filteredNotes.length === 0) {
+			this.renderedResult = null;
 			this.renderMessage(query ? '没有匹配的便笺。' : '文件中还没有二级标题便笺。');
 			return;
 		}
@@ -589,6 +719,32 @@ export class StickyNotesView extends ItemView {
 		for (const note of newestFirst) {
 			void this.renderCard(listEl, note);
 		}
+		// 记下这一轮渲染出来的结果，供 replaceResults 判断"要不要重建"。
+		this.renderedResult = { query, ids: newestFirst.map((note) => note.id) };
+	}
+
+	/**
+	 * 搜索输入去抖：连续 input 事件只重建一次。搜索框每次都全量重建卡片
+	 * 列表（分配量正比于便笺数），逐字符触发会造成明显的 GC 抖动。
+	 */
+	private scheduleSearchResults(): void {
+		const win = this.containerEl.ownerDocument.defaultView ?? window;
+		if (this.searchDebounceTimer !== null) {
+			win.clearTimeout(this.searchDebounceTimer);
+		}
+		this.searchDebounceTimer = win.setTimeout(() => {
+			this.searchDebounceTimer = null;
+			this.replaceResults();
+		}, SEARCH_DEBOUNCE_MS);
+	}
+
+	private cancelScheduledSearch(): void {
+		if (this.searchDebounceTimer === null) {
+			return;
+		}
+		const win = this.containerEl.ownerDocument.defaultView ?? window;
+		win.clearTimeout(this.searchDebounceTimer);
+		this.searchDebounceTimer = null;
 	}
 
 	private async renderCard(
@@ -786,6 +942,8 @@ export class StickyNotesView extends ItemView {
 		cardEl: HTMLElement,
 		note: StickyNote,
 	): Promise<void> {
+		// 先摘掉上一份 Ctrl/Cmd+S 拦截器：切换卡片时旧卡片上的监听器不能留。
+		this.detachEditorKeydown();
 		if (this.editingCardEl && this.editingCardEl !== cardEl) {
 			const previousCard = this.editingCardEl;
 			const previousNote = previousCard.dataset.noteId
@@ -911,18 +1069,9 @@ export class StickyNotesView extends ItemView {
 			commitEdit();
 		});
 		// Ctrl/Cmd+S 与对勾按钮等价。捕获阶段拦截，避免冒泡到
-		// Obsidian 全局的"保存当前文件"命令。
-		cardEl.addEventListener(
-			'keydown',
-			(event) => {
-				if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-					event.preventDefault();
-					event.stopPropagation();
-					commitEdit();
-				}
-			},
-			true,
-		);
+		// Obsidian 全局的"保存当前文件"命令。监听器由 attachEditorKeydown
+		// 记录并保证全生命周期只有一份（退出编辑时摘除）。
+		this.attachEditorKeydown(cardEl, commitEdit);
 	}
 
 	private placeCaretAtEnd(element: HTMLElement): void {
