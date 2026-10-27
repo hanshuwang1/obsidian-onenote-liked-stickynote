@@ -67,7 +67,6 @@
 
 ## 安装
 
-### 手动安装:
 
 1. 下载或构建出 `main.js`,`manifest.json`,`styles.css`(`npm run build` 会在仓库根目录生成 `main.js`)
 2. 放进 `<你的 Vault>/.obsidian/plugins/obsidian-onenote-liked-stickynote/`
@@ -76,7 +75,6 @@
 
 最低版本:Obsidian **1.7.2**(桌面端).
 
-### 社区插件市场
 
 ## 使用
 
