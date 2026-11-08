@@ -83,21 +83,31 @@ export default class StickyNotesPlugin extends Plugin {
 	}
 
 	/**
-	 * 官方 openPopoutLeaf 初始化参数：尺寸自适应屏幕（设置 0=自动），
-	 * 位置右下角。Obsidian 内部把 size 钳制到 ≥600，精确尺寸由
-	 * setDefaultWindowSize 在打开后修正。
+	 * 官方 openPopoutLeaf 初始化参数。x/y 是全局虚拟桌面坐标（原点在主显示器
+	 * 左上角），必须叠加主窗口所在显示器的 availLeft/availTop，否则多显示器
+	 * （副屏在主屏右侧/左侧）或不同分辨率下初始位置会落到别的显示器上。
+	 * Obsidian 内部把初始 size 钳制到 ≥600×600，定位需按钳制后的尺寸计算，
+	 * 让首帧就贴在右下角；精确尺寸由 setDefaultWindowSize 打开后修正。
 	 */
 	private buildPopoutInitData(): { x: number; y: number; size: { width: number; height: number } } {
 		const { width, height } = StickyNotesView.resolveWindowSize(
 			this.settings.popoutWidth,
 			this.settings.popoutHeight,
 		);
+		const screen = window.screen as Screen & {
+			availLeft?: number;
+			availTop?: number;
+		};
+		const availLeft = screen.availLeft ?? 0;
+		const availTop = screen.availTop ?? 0;
+		const availWidth = screen.availWidth > 0 ? screen.availWidth : 1920;
+		const availHeight = screen.availHeight > 0 ? screen.availHeight : 1080;
+		const initWidth = Math.max(width, 600);
+		const initHeight = Math.max(height, 600);
 		const margin = 24;
-		const availWidth = window.screen?.availWidth > 0 ? window.screen.availWidth : 1920;
-		const availHeight = window.screen?.availHeight > 0 ? window.screen.availHeight : 1080;
 		return {
-			x: Math.round(Math.max(0, availWidth - width - margin)),
-			y: Math.round(Math.max(0, availHeight - height - margin)),
+			x: Math.round(Math.max(availLeft, availLeft + availWidth - initWidth - margin)),
+			y: Math.round(Math.max(availTop, availTop + availHeight - initHeight - margin)),
 			size: { width, height },
 		};
 	}
